@@ -15,7 +15,7 @@ class NetFishApp(ctk.CTk):
         super().__init__()
 
         self.title("NET-fish 🎣 - Network Stream Sniffer")
-        self.geometry("10000x700")
+        self.geometry("1100x700")
 
         # UI Layout
         self.grid_columnconfigure(1, weight=1)
