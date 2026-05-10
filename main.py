@@ -7,52 +7,68 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 # Konfiguration
-MAX_CACHE_SIZE_MB = 10  # Dateien über 10MB werden nicht im RAM gecacht
-captured_data = {}      # Speicher für: {url: {"content": bytes, "type": str}}
+MAX_CACHE_SIZE_MB = 100  # Höheres Limit für Videos
+captured_data = {}      
 
-class Netfish(ctk.CTk):
+class NetFishApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Network Stream Sniffer & File Builder")
-        self.geometry("900x600")
+        self.title("NET-fish 🎣 - Network Stream Sniffer")
+        self.geometry("10000x700")
 
         # UI Layout
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Linke Seite: Steuerung & Status
-        self.sidebar = ctk.CTkFrame(self, width=200, corner_radius=0)
+        # --- Sidebar ---
+        self.sidebar = ctk.CTkFrame(self, width=250, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         
-        self.status_label = ctk.CTkLabel(self.sidebar, text="Status: Bereit", text_color="yellow")
-        self.status_label.pack(pady=20, padx=10)
+        self.logo_label = ctk.CTkLabel(self.sidebar, text="NET-fish 🎣", font=ctk.CTkFont(size=20, weight="bold"))
+        self.logo_label.pack(pady=20)
 
-        self.start_btn = ctk.CTkButton(self.sidebar, text="Browser Starten", command=self.start_sniffing_thread)
-        self.start_btn.pack(pady=10, padx=10)
+        # Filter-Bereich
+        self.filter_label = ctk.CTkLabel(self.sidebar, text="Filter (z.B. mp4, jpg, pdf):")
+        self.filter_label.pack(padx=10, pady=(10, 0))
+        
+        self.filter_entry = ctk.CTkEntry(self.sidebar, placeholder_text="mp4, png, ts, pdf")
+        self.filter_entry.insert(0, "mp4, png, jpg, pdf, ts") # Standard-Filter
+        self.filter_entry.pack(padx=10, pady=5, fill="x")
 
-        self.save_btn = ctk.CTkButton(self.sidebar, text="Markierte Datei speichern", command=self.save_selected_file, state="disabled")
+        self.start_btn = ctk.CTkButton(self.sidebar, text="Browser Starten", command=self.start_sniffing_thread, fg_color="green", hover_color="darkgreen")
+        self.start_btn.pack(pady=20, padx=10)
+
+        self.save_btn = ctk.CTkButton(self.sidebar, text="Datei speichern (ID)", command=self.save_selected_file, state="disabled")
         self.save_btn.pack(pady=10, padx=10)
+
+        self.status_label = ctk.CTkLabel(self.sidebar, text="Status: Bereit", text_color="yellow")
+        self.status_label.pack(pady=10)
 
         self.info_label = ctk.CTkLabel(self.sidebar, text="Cache: 0 Dateien", font=("Arial", 11))
         self.info_label.pack(side="bottom", pady=20)
 
-        # Rechte Seite: Liste der abgefangenen Dateien
-        self.file_list = ctk.CTkTextbox(self, width=600)
+        # --- Main Content ---
+        self.file_list = ctk.CTkTextbox(self, width=600, font=("Courier New", 12))
         self.file_list.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-        self.file_list.insert("0.0", "Warte auf Datenstrom...\n" + "-"*50 + "\n")
+        self.log("NET-fish bereit. Bitte Filter setzen und Browser starten.")
         
-        # Interne Liste für die Auswahl (einfaches Mapping)
         self.detected_urls = []
 
     def log(self, message):
         self.file_list.insert("end", message + "\n")
         self.file_list.see("end")
 
+    def get_active_filters(self):
+        # Liest das Eingabefeld aus und macht eine Liste daraus
+        filter_str = self.filter_entry.get().lower()
+        filters = [f.strip() for f in filter_str.split(",") if f.strip()]
+        return filters
+
     def start_sniffing_thread(self):
         self.status_label.configure(text="Status: Sniffing...", text_color="green")
         self.start_btn.configure(state="disabled")
-        # Starte Playwright in einem eigenen Thread, damit die GUI nicht einfriert
+        self.filter_entry.configure(state="disabled") # Filter sperren während Laufzeit
         threading.Thread(target=self.run_playwright, daemon=True).start()
 
     def run_playwright(self):
@@ -60,70 +76,70 @@ class Netfish(ctk.CTk):
 
     async def sniff_network(self):
         async with async_playwright() as p:
-            # Startet Chrome. Du kannst auch einen bestehenden Browser nutzen,
-            # aber das hier ist für die Entwicklung einfacher.
             browser = await p.chromium.launch(headless=False)
             context = await browser.new_context()
             page = await context.new_page()
 
-            # Event-Handler für Antworten
             async def handle_response(response):
                 try:
-                    url = response.url
-                    content_type = response.headers.get("content-type", "")
+                    url = response.url.lower()
+                    active_filters = self.get_active_filters()
                     
-                    # Filtere uninteressante Dinge (wie kleine Tracker-Pixel)
-                    if any(ext in url.lower() for ext in [".png", ".jpg", ".mp4", ".pdf", ".zip", ".json"]):
-                        
-                        # Body abrufen
+                    # Prüfen ob die URL eine der Endungen aus dem Filter enthält
+                    if any(ext in url for ext in active_filters):
                         body = await response.body()
+                        if not body: return
+
                         size_mb = len(body) / (1024 * 1024)
 
                         if size_mb <= MAX_CACHE_SIZE_MB:
-                            file_id = f"{len(self.detected_urls) + 1}"
+                            file_id = str(len(self.detected_urls) + 1)
+                            content_type = response.headers.get("content-type", "unknown")
+                            
                             captured_data[file_id] = {
                                 "url": url,
                                 "content": body,
-                                "type": content_type
+                                "ext": url.split(".")[-1].split("?")[0][:4] # Endung extrahieren
                             }
                             self.detected_urls.append(file_id)
                             
-                            # UI Update
-                            self.log(f"[{file_id}] {content_type} | {size_mb:.2f} MB | {url[:80]}...")
+                            self.log(f"[{file_id}] {size_mb:.2f}MB | {content_type} | {url[:70]}...")
                             self.info_label.configure(text=f"Cache: {len(captured_data)} Dateien")
                             self.save_btn.configure(state="normal")
                 except Exception:
-                    pass # Fehler bei Streams oder geschlossenen Verbindungen ignorieren
+                    pass 
 
             page.on("response", handle_response)
             
-            self.log("Browser geöffnet. Navigiere zu einer Seite...")
-            # Bleibe offen, bis der Browser manuell geschlossen wird
             while True:
                 await asyncio.sleep(1)
-                if browser.is_connected() == False:
+                if not browser.is_connected():
                     break
+            
+            self.status_label.configure(text="Status: Beendet", text_color="red")
+            self.start_btn.configure(state="normal")
+            self.filter_entry.configure(state="normal")
 
     def save_selected_file(self):
-        # Einfache Logik: Wir fragen nach der ID aus der Liste
-        dialog = ctk.CTkInputDialog(text="Gib die [ID] der Datei ein, die du speichern willst:", title="Speichern")
+        dialog = ctk.CTkInputDialog(text="Dateinummer [ID] eingeben:", title="Save File")
         file_id = dialog.get_input()
 
         if file_id in captured_data:
-            data = captured_data[file_id]
-            # Dateiendung raten
-            ext = data["url"].split(".")[-1].split("?")[0]
-            if len(ext) > 4: ext = "bin"
-
-            file_path = filedialog.asksaveasfilename(defaultextension=f".{ext}", initialfile=f"file_{file_id}.{ext}")
+            file_info = captured_data[file_id]
+            suggested_ext = file_info["ext"]
+            
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=f".{suggested_ext}",
+                initialfile=f"caught_file_{file_id}.{suggested_ext}"
+            )
             
             if file_path:
                 with open(file_path, "wb") as f:
-                    f.write(data["content"])
-                messagebox.showinfo("Erfolg", "Datei wurde erfolgreich aufgebaut und gespeichert!")
+                    f.write(file_info["content"])
+                messagebox.showinfo("NET-fish", "Datei erfolgreich aufgebaut!")
         else:
-            messagebox.showerror("Fehler", "ID nicht gefunden.")
+            messagebox.showerror("Fehler", "ID nicht im Cache gefunden.")
 
 if __name__ == "__main__":
-    app = Netfish()
+    app = NetFishApp()
     app.mainloop()
